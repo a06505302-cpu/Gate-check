@@ -5,35 +5,37 @@ from concurrent.futures import ThreadPoolExecutor
 
 BOT_TOKEN = "7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w"
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-headers = {"User-Agent": "Mozilla/5.0"}
+headers = {
+    "User-Agent": "Mozilla/5.0"
+}
 
-# علامات PayPal
 paypal_signs = [
     "paypal.com/sdk/js",
     "paypalobjects.com",
     "paypal-button",
     "client-id=",
-    "paypal checkout",
+    "paypal checkout"
 ]
 
 paths = ["donate","donation","give","support"]
 
-executor = ThreadPoolExecutor(max_workers=20)
+executor = ThreadPoolExecutor(max_workers=50)
 
 stop_scan = {}
 
-
+# تنظيف الرابط
 def clean_domain(url):
     try:
-        p = urlparse(url)
+        p = urlparse(url.strip())
         if p.scheme in ["http","https"]:
             return f"{p.scheme}://{p.netloc}"
     except:
         return None
 
 
+# فحص PayPal
 def check_paypal(url):
     try:
         r = requests.get(url, headers=headers, timeout=10)
@@ -49,11 +51,21 @@ def check_paypal(url):
         return False
 
 
+# فحص المواقع
 def scan_sites(sites, chat_id):
 
     total = len(sites)
     checked = 0
     approved = 0
+
+    panel = bot.send_message(chat_id,
+f"""
+📊 <b>Scan Panel</b>
+
+Total: {total}
+Checked: 0
+Approved: 0
+""")
 
     for site in sites:
 
@@ -76,34 +88,94 @@ def scan_sites(sites, chat_id):
 
                 approved += 1
 
-                msg = f"""
-APPROVED ✔
+                bot.send_message(chat_id,
+f"""
+✅ <b>APPROVED</b>
 
 Gateway: PayPal
 Type: {p}
 
 URL:
 {url}
-
-Progress: {checked}/{total}
-"""
-
-                bot.send_message(chat_id,msg)
-                break
-
-        if checked % 20 == 0:
-            bot.send_message(chat_id,f"🔎 Checked {checked}/{total}")
-
-    bot.send_message(chat_id,
-f"""
-✅ Scan Finished
-
-Total Sites: {total}
-Checked: {checked}
-Approved: {approved}
 """)
 
+                break
 
+        if checked % 5 == 0 or checked == total:
+
+            try:
+                bot.edit_message_text(
+f"""
+📊 <b>Scan Panel</b>
+
+Total: {total}
+Checked: {checked}
+Approved: {approved}
+""",
+                chat_id,
+                panel.message_id
+                )
+            except:
+                pass
+
+    try:
+        bot.edit_message_text(
+f"""
+✅ <b>Scan Finished</b>
+
+Total: {total}
+Checked: {checked}
+Approved: {approved}
+""",
+        chat_id,
+        panel.message_id
+        )
+    except:
+        pass
+
+
+# فحص فردي
+@bot.message_handler(commands=['ss'])
+def single_scan(message):
+
+    args = message.text.split()
+
+    if len(args) < 2:
+        bot.reply_to(message,"❌ مثال:\n/ss https://site.com")
+        return
+
+    site = args[1]
+
+    domain = clean_domain(site)
+
+    if not domain:
+        bot.reply_to(message,"❌ رابط غير صالح")
+        return
+
+    bot.reply_to(message,"🔎 جاري الفحص...")
+
+    for p in paths:
+
+        url = f"{domain}/{p}"
+
+        if check_paypal(url):
+
+            bot.send_message(message.chat.id,
+f"""
+✅ <b>APPROVED</b>
+
+Gateway: PayPal
+Type: {p}
+
+URL:
+{url}
+""")
+            return
+
+    bot.send_message(message.chat.id,"❌ لا يوجد PayPal")
+
+
+# إيقاف الفحص
 @bot.message_handler(commands=['stop'])
 def stop(message):
 
@@ -111,19 +183,35 @@ def stop(message):
     bot.reply_to(message,"⛔ سيتم إيقاف الفحص...")
 
 
+# استقبال ملف
 @bot.message_handler(content_types=['document'])
 def handle_file(message):
 
     stop_scan[message.chat.id] = False
 
-    file_info = bot.get_file(message.document.file_id)
-    file = bot.download_file(file_info.file_path)
+    try:
 
-    sites = file.decode().splitlines()
+        file_info = bot.get_file(message.document.file_id)
+        file = bot.download_file(file_info.file_path)
 
-    bot.reply_to(message,"📡 بدأ الفحص...")
+        text = file.decode("utf-8", errors="ignore")
 
-    executor.submit(scan_sites, sites, message.chat.id)
+        sites = []
+
+        for line in text.split("\n"):
+            line = line.strip()
+            if line:
+                sites.append(line)
+
+        bot.reply_to(message,f"📡 تم استلام الملف — {len(sites)} موقع")
+
+        executor.submit(scan_sites, sites, message.chat.id)
+
+    except Exception as e:
+
+        bot.send_message(message.chat.id,f"❌ خطأ:\n{e}")
 
 
-bot.infinity_polling()
+print("BOT STARTED...")
+
+bot.infinity_polling(timeout=60, long_polling_timeout=60)
