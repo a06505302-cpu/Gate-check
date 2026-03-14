@@ -1,0 +1,129 @@
+import telebot
+import requests
+from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
+
+BOT_TOKEN = "PUT_BOT_TOKEN"
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+headers = {"User-Agent": "Mozilla/5.0"}
+
+# علامات PayPal
+paypal_signs = [
+    "paypal.com/sdk/js",
+    "paypalobjects.com",
+    "paypal-button",
+    "client-id=",
+    "paypal checkout",
+]
+
+paths = ["donate","donation","give","support"]
+
+executor = ThreadPoolExecutor(max_workers=20)
+
+stop_scan = {}
+
+
+def clean_domain(url):
+    try:
+        p = urlparse(url)
+        if p.scheme in ["http","https"]:
+            return f"{p.scheme}://{p.netloc}"
+    except:
+        return None
+
+
+def check_paypal(url):
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        html = r.text.lower()
+
+        for sign in paypal_signs:
+            if sign in html:
+                return True
+
+        return False
+
+    except:
+        return False
+
+
+def scan_sites(sites, chat_id):
+
+    total = len(sites)
+    checked = 0
+    approved = 0
+
+    for site in sites:
+
+        if stop_scan.get(chat_id):
+            bot.send_message(chat_id,"⛔ تم إيقاف الفحص")
+            return
+
+        checked += 1
+
+        domain = clean_domain(site)
+
+        if not domain:
+            continue
+
+        for p in paths:
+
+            url = f"{domain}/{p}"
+
+            if check_paypal(url):
+
+                approved += 1
+
+                msg = f"""
+APPROVED ✔
+
+Gateway: PayPal
+Type: {p}
+
+URL:
+{url}
+
+Progress: {checked}/{total}
+"""
+
+                bot.send_message(chat_id,msg)
+                break
+
+        if checked % 20 == 0:
+            bot.send_message(chat_id,f"🔎 Checked {checked}/{total}")
+
+    bot.send_message(chat_id,
+f"""
+✅ Scan Finished
+
+Total Sites: {total}
+Checked: {checked}
+Approved: {approved}
+""")
+
+
+@bot.message_handler(commands=['stop'])
+def stop(message):
+
+    stop_scan[message.chat.id] = True
+    bot.reply_to(message,"⛔ سيتم إيقاف الفحص...")
+
+
+@bot.message_handler(content_types=['document'])
+def handle_file(message):
+
+    stop_scan[message.chat.id] = False
+
+    file_info = bot.get_file(message.document.file_id)
+    file = bot.download_file(file_info.file_path)
+
+    sites = file.decode().splitlines()
+
+    bot.reply_to(message,"📡 بدأ الفحص...")
+
+    executor.submit(scan_sites, sites, message.chat.id)
+
+
+bot.infinity_polling()
