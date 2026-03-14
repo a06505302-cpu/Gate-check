@@ -3,8 +3,8 @@ import requests
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 
+# ====== إعداد البوت ======
 BOT_TOKEN = "7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w"
-
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 headers = {
@@ -25,7 +25,7 @@ executor = ThreadPoolExecutor(max_workers=50)
 
 stop_scan = {}
 
-# تنظيف الرابط
+# ====== تنظيف الرابط ======
 def clean_domain(url):
     try:
         p = urlparse(url.strip())
@@ -34,26 +34,20 @@ def clean_domain(url):
     except:
         return None
 
-
-# فحص PayPal
+# ====== فحص PayPal ======
 def check_paypal(url):
     try:
         r = requests.get(url, headers=headers, timeout=10)
         html = r.text.lower()
-
         for sign in paypal_signs:
             if sign in html:
                 return True
-
         return False
-
     except:
         return False
 
-
-# فحص المواقع
+# ====== فحص المواقع ======
 def scan_sites(sites, chat_id):
-
     total = len(sites)
     checked = 0
     approved = 0
@@ -65,29 +59,23 @@ f"""
 Total: {total}
 Checked: 0
 Approved: 0
-""")
+"""
+    )
 
     for site in sites:
-
         if stop_scan.get(chat_id):
             bot.send_message(chat_id,"⛔ تم إيقاف الفحص")
             return
 
         checked += 1
-
         domain = clean_domain(site)
-
         if not domain:
             continue
 
         for p in paths:
-
             url = f"{domain}/{p}"
-
             if check_paypal(url):
-
                 approved += 1
-
                 bot.send_message(chat_id,
 f"""
 ✅ <b>APPROVED</b>
@@ -98,11 +86,9 @@ Type: {p}
 URL:
 {url}
 """)
-
                 break
 
         if checked % 5 == 0 or checked == total:
-
             try:
                 bot.edit_message_text(
 f"""
@@ -112,8 +98,8 @@ Total: {total}
 Checked: {checked}
 Approved: {approved}
 """,
-                chat_id,
-                panel.message_id
+                    chat_id,
+                    panel.message_id
                 )
             except:
                 pass
@@ -133,21 +119,16 @@ Approved: {approved}
     except:
         pass
 
-
-# فحص فردي
+# ====== فحص فردي /ss ======
 @bot.message_handler(commands=['ss'])
 def single_scan(message):
-
     args = message.text.split()
-
     if len(args) < 2:
         bot.reply_to(message,"❌ مثال:\n/ss https://site.com")
         return
 
     site = args[1]
-
     domain = clean_domain(site)
-
     if not domain:
         bot.reply_to(message,"❌ رابط غير صالح")
         return
@@ -155,11 +136,8 @@ def single_scan(message):
     bot.reply_to(message,"🔎 جاري الفحص...")
 
     for p in paths:
-
         url = f"{domain}/{p}"
-
         if check_paypal(url):
-
             bot.send_message(message.chat.id,
 f"""
 ✅ <b>APPROVED</b>
@@ -174,44 +152,43 @@ URL:
 
     bot.send_message(message.chat.id,"❌ لا يوجد PayPal")
 
+# ====== أمر /start ======
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message,
+f"""
+👋 أهلاً بك!
+📡 أرسل لي ملف المواقع لأبدأ الفحص تلقائيًا
+أو استخدم الأمر الفردي:
+/ss <رابط>
+للفحص السريع.
+""")
 
-# إيقاف الفحص
+# ====== إيقاف الفحص /stop ======
 @bot.message_handler(commands=['stop'])
 def stop(message):
-
     stop_scan[message.chat.id] = True
     bot.reply_to(message,"⛔ سيتم إيقاف الفحص...")
 
-
-# استقبال ملف
+# ====== استقبال ملف ======
 @bot.message_handler(content_types=['document'])
 def handle_file(message):
-
     stop_scan[message.chat.id] = False
 
     try:
-
         file_info = bot.get_file(message.document.file_id)
         file = bot.download_file(file_info.file_path)
 
         text = file.decode("utf-8", errors="ignore")
+        sites = [line.strip() for line in text.split("\n") if line.strip()]
 
-        sites = []
-
-        for line in text.split("\n"):
-            line = line.strip()
-            if line:
-                sites.append(line)
-
-        bot.reply_to(message,f"📡 تم استلام الملف — {len(sites)} موقع")
+        bot.reply_to(message,f"📡 تم استلام الملف — {len(sites)} موقع سيتم فحصه تلقائيًا")
 
         executor.submit(scan_sites, sites, message.chat.id)
 
     except Exception as e:
-
         bot.send_message(message.chat.id,f"❌ خطأ:\n{e}")
 
-
+# ====== بدء البوت ======
 print("BOT STARTED...")
-
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
