@@ -3,7 +3,7 @@ import requests
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 
-BOT_TOKEN = "PUT_BOT_TOKEN"
+BOT_TOKEN = "7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
