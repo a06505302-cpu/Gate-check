@@ -36,6 +36,31 @@ def check_url_status(url):
     except requests.RequestException:
         return False
 
+# Function to check links from a file
+def check_links_in_file():
+    links = []
+    try:
+        with open("links.txt", "r") as file:
+            links = [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        print("The file links.txt does not exist.")
+        return
+    
+    results = []
+    for url in links:
+        if not (url.startswith("http://") or url.startswith("https://")):
+            results.append(f"{url} - Invalid")
+            continue
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                results.append(f"{url} - Working fine")
+            else:
+                results.append(f"{url} - Unexpected response: {response.status_code}")
+        except requests.RequestException:
+            results.append(f"{url} - Not working or there's an issue")
+    return results
+
 # Command handler for /give
 async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
@@ -43,8 +68,6 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     url = context.args[0]
-
-    # Indicate that the check has started
     await update.message.reply_text("🔍 Checking the link...")
 
     # Validate URL format
@@ -62,39 +85,42 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Unable to reach the site. Please check the URL.")
         return
 
-    # Check if site is supported
+    # Check if site supports donation
     supported = is_supported_site(url)
 
     # Extract donation ID
     donation_id = extract_donation_id(url)
 
-    # Compose the final message
+    # Compose the reply based on the result
     if donation_id:
         new_link = f"https://deepcreekwatershedfoundation.org/give/{donation_id}?giveDonationFormInIframe=1"
         message = (
             f"🌐 **Live**\n"
             f"Your link supports donation ID: {donation_id}\n"
-            f"Site support status: {'Supported' if supported else 'Not Supported'}"
+            f"Modified donation link: {new_link}"
         )
+        await update.message.reply_text(message, parse_mode='Markdown')
+    elif supported:
+        await update.message.reply_text("✅ The link is valid and supports donations.")
     else:
-        message = (
-            f"🌐 **Live**\n"
-            f"Your link does not contain a donation ID.\n"
-            f"Site support status: {'Supported' if supported else 'Not Supported'}"
-        )
+        await update.message.reply_text("❌ The link is unsupported or invalid.")
 
-    await update.message.reply_markdown_v2(message)
+# Command to check links from file
+async def check_links_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    results = check_links_in_file()
+    if results:
+        reply_text = "\n".join(results)
+        # If message is too long, consider splitting or sending as a file
+        await update.message.reply_text(reply_text)
+    else:
+        await update.message.reply_text("No links found to check.")
 
-# Start command handler
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hello! Send /give <donation link> to check your URL.")
-
-# Main application
+# Main program
 if __name__ == '__main__':
-    TOKEN = '7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w'  # Replace with your bot token
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token('7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w').build()
 
-    app.add_handler(CommandHandler("start", start))
+    # Add command handlers
     app.add_handler(CommandHandler("give", give_command))
-
+    app.add_handler(CommandHandler("checklinks", check_links_file))
+    
     app.run_polling()
