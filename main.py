@@ -91,7 +91,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Main application
 if __name__ == '__main__':
-    TOKEN = 'YOUR_BOT_TOKEN_HERE'  # Replace with your bot token
+    TOKEN = '7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w'  # Replace with your bot token
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
