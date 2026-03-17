@@ -1,194 +1,100 @@
-import telebot
-import requests
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from urllib.parse import urlparse
-from concurrent.futures import ThreadPoolExecutor
+import requests
 
-# ====== إعداد البوت ======
-BOT_TOKEN = "7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w"
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
-
-headers = {
-    "User-Agent": "Mozilla/5.0"
-}
-
-paypal_signs = [
-    "paypal.com/sdk/js",
-    "paypalobjects.com",
-    "paypal-button",
-    "client-id=",
-    "paypal checkout"
+# Supported sites list
+SUPPORTED_SITES = [
+    "deepcreekwatershedfoundation.org",
+    # Add other supported domains here if needed
 ]
 
-paths = ["donate","donation","give","support"]
+# Check if the site supports the donation feature
+def is_supported_site(url):
+    parsed_url = urlparse(url)
+    return any(domain in parsed_url.netloc for domain in SUPPORTED_SITES)
 
-executor = ThreadPoolExecutor(max_workers=50)
+# Extract donation ID from the URL
+def extract_donation_id(url):
+    parsed_url = urlparse(url)
+    path_segments = parsed_url.path.strip('/').split('/')
+    if 'give' in path_segments:
+        give_index = path_segments.index('give')
+        if give_index + 1 < len(path_segments):
+            return path_segments[give_index + 1]
+    return None
 
-stop_scan = {}
+# Validate URL format
+def is_valid_http(url):
+    return url.startswith('http://') or url.startswith('https://')
 
-# ====== تنظيف الرابط ======
-def clean_domain(url):
+# Check URL response status
+def check_url_status(url):
     try:
-        p = urlparse(url.strip())
-        if p.scheme in ["http","https"]:
-            return f"{p.scheme}://{p.netloc}"
-    except:
-        return None
+        response = requests.get(url, timeout=5)
+        return response.status_code == 200
+    except requests.RequestException:
+        return False
 
-# ====== فحص PayPal ======
-def check_paypal(url):
+# Command handler for /give
+async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1:
+        await update.message.reply_text("Please send the link after the command, e.g., /give <URL>")
+        return
+    
+    url = context.args[0]
+
+    # Indicate that the check has started
+    await update.message.reply_text("🔍 Checking the link...")
+
+    # Validate URL format
+    if not is_valid_http(url):
+        await update.message.reply_text("❌ Invalid URL format. The link must start with http:// or https://")
+        return
+    
+    # Verify site response
     try:
-        r = requests.get(url, headers=headers, timeout=10)
-        html = r.text.lower()
-        for sign in paypal_signs:
-            if sign in html:
-                return True
-        return False
-    except:
-        return False
-
-# ====== فحص المواقع ======
-def scan_sites(sites, chat_id):
-    total = len(sites)
-    checked = 0
-    approved = 0
-
-    panel = bot.send_message(chat_id,
-f"""
-📊 <b>Scan Panel</b>
-
-Total: {total}
-Checked: 0
-Approved: 0
-"""
-    )
-
-    for site in sites:
-        if stop_scan.get(chat_id):
-            bot.send_message(chat_id,"⛔ تم إيقاف الفحص")
+        response = requests.get(url, timeout=5)
+        if response.status_code != 200:
+            await update.message.reply_text(f"⚠️ The site is not responding properly. Status code: {response.status_code}")
             return
+    except requests.RequestException:
+        await update.message.reply_text("❌ Unable to reach the site. Please check the URL.")
+        return
 
-        checked += 1
-        domain = clean_domain(site)
-        if not domain:
-            continue
+    # Check if site is supported
+    supported = is_supported_site(url)
 
-        for p in paths:
-            url = f"{domain}/{p}"
-            if check_paypal(url):
-                approved += 1
-                bot.send_message(chat_id,
-f"""
-✅ <b>APPROVED</b>
+    # Extract donation ID
+    donation_id = extract_donation_id(url)
 
-Gateway: PayPal
-Type: {p}
-
-URL:
-{url}
-""")
-                break
-
-        if checked % 5 == 0 or checked == total:
-            try:
-                bot.edit_message_text(
-f"""
-📊 <b>Scan Panel</b>
-
-Total: {total}
-Checked: {checked}
-Approved: {approved}
-""",
-                    chat_id,
-                    panel.message_id
-                )
-            except:
-                pass
-
-    try:
-        bot.edit_message_text(
-f"""
-✅ <b>Scan Finished</b>
-
-Total: {total}
-Checked: {checked}
-Approved: {approved}
-""",
-        chat_id,
-        panel.message_id
+    # Compose the final message
+    if donation_id:
+        new_link = f"https://deepcreekwatershedfoundation.org/give/{donation_id}?giveDonationFormInIframe=1"
+        message = (
+            f"🌐 **Live**\n"
+            f"Your link supports donation ID: {donation_id}\n"
+            f"Site support status: {'Supported' if supported else 'Not Supported'}"
         )
-    except:
-        pass
+    else:
+        message = (
+            f"🌐 **Live**\n"
+            f"Your link does not contain a donation ID.\n"
+            f"Site support status: {'Supported' if supported else 'Not Supported'}"
+        )
 
-# ====== فحص فردي /ss ======
-@bot.message_handler(commands=['ss'])
-def single_scan(message):
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message,"❌ مثال:\n/ss https://site.com")
-        return
+    await update.message.reply_markdown_v2(message)
 
-    site = args[1]
-    domain = clean_domain(site)
-    if not domain:
-        bot.reply_to(message,"❌ رابط غير صالح")
-        return
+# Start command handler
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! Send /give <donation link> to check your URL.")
 
-    bot.reply_to(message,"🔎 جاري الفحص...")
+# Main application
+if __name__ == '__main__':
+    TOKEN = 'YOUR_BOT_TOKEN_HERE'  # Replace with your bot token
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    for p in paths:
-        url = f"{domain}/{p}"
-        if check_paypal(url):
-            bot.send_message(message.chat.id,
-f"""
-✅ <b>APPROVED</b>
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("give", give_command))
 
-Gateway: PayPal
-Type: {p}
-
-URL:
-{url}
-""")
-            return
-
-    bot.send_message(message.chat.id,"❌ لا يوجد PayPal")
-
-# ====== أمر /start ======
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message,
-f"""
-👋 أهلاً بك!
-📡 أرسل لي ملف المواقع لأبدأ الفحص تلقائيًا
-أو استخدم الأمر الفردي:
-/ss <رابط>
-للفحص السريع.
-""")
-
-# ====== إيقاف الفحص /stop ======
-@bot.message_handler(commands=['stop'])
-def stop(message):
-    stop_scan[message.chat.id] = True
-    bot.reply_to(message,"⛔ سيتم إيقاف الفحص...")
-
-# ====== استقبال ملف ======
-@bot.message_handler(content_types=['document'])
-def handle_file(message):
-    stop_scan[message.chat.id] = False
-
-    try:
-        file_info = bot.get_file(message.document.file_id)
-        file = bot.download_file(file_info.file_path)
-
-        text = file.decode("utf-8", errors="ignore")
-        sites = [line.strip() for line in text.split("\n") if line.strip()]
-
-        bot.reply_to(message,f"📡 تم استلام الملف — {len(sites)} موقع سيتم فحصه تلقائيًا")
-
-        executor.submit(scan_sites, sites, message.chat.id)
-
-    except Exception as e:
-        bot.send_message(message.chat.id,f"❌ خطأ:\n{e}")
-
-# ====== بدء البوت ======
-print("BOT STARTED...")
-bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    app.run_polling()
