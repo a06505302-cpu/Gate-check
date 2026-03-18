@@ -1,20 +1,28 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, Document
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import os
 from urllib.parse import urlparse
 import requests
 
-# قائمة المواقع المدعومة
+# ========= CONFIG =========
+
 SUPPORTED_SITES = [
     "deepcreekwatershedfoundation.org",
-    # أضف مزيدًا من النطاقات المدعومة هنا إذا لزم الأمر
 ]
 
-# التحقق مما إذا كان الموقع يدعم التبرع
-def is_supported_site(url):
-    parsed_url = urlparse(url)
-    return any(domain in parsed_url.netloc for domain in SUPPORTED_SITES)
+# ========= HELPERS =========
 
-# استخراج معرف التبرع من الرابط
+def clean_url(url: str):
+    url = url.strip()
+    if not url:
+        return None
+    if not url.startswith("http"):
+        url = "http://" + url
+    return url
+
+def is_valid_http(url):
+    return url.startswith('http://') or url.startswith('https://')
+
 def extract_donation_id(url):
     parsed_url = urlparse(url)
     path_segments = parsed_url.path.strip('/').split('/')
@@ -24,112 +32,139 @@ def extract_donation_id(url):
             return path_segments[give_index + 1]
     return None
 
-# التحقق من صحة صيغة الرابط
-def is_valid_http(url):
-    return url.startswith('http://') or url.startswith('https://')
+def is_supported_site(url):
+    parsed_url = urlparse(url)
+    return any(domain in parsed_url.netloc for domain in SUPPORTED_SITES)
 
-# التحقق من حالة الرد على الرابط
-def check_url_status(url):
-    try:
-        response = requests.get(url, timeout=5)
-        return response.status_code == 200
-    except requests.RequestException:
-        return False
+# ========= CORE CHECK =========
 
-# التحقق من الروابط داخل ملف
-def check_links_in_file():
-    links = []
-    try:
-        with open("links.txt", "r") as file:
-            links = [line.strip() for line in file if line.strip()]
-    except FileNotFoundError:
-        print("ملف links.txt غير موجود.")
-        return
-    
-    results = []
-    for url in links:
-        if not is_valid_http(url):
-            results.append(f"{url} - غير صالح")
-            continue
-        try:
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                results.append(f"{url} - يعمل بشكل جيد")
-            else:
-                results.append(f"{url} - استجابة غير متوقعة: {response.status_code}")
-        except requests.RequestException:
-            results.append(f"{url} - غير يعمل أو هناك مشكلة")
-    return results
+def check_url(url):
+    url = clean_url(url)
+    if not url:
+        return "❌ Empty line"
 
-# أمر /give
-async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1:
-        await update.message.reply_text("رجاءً أرسل الرابط بعد الأمر، مثلاً /give <رابط>")
-        return
-    
-    url = context.args[0]
-    await update.message.reply_text("🔍 جاري التحقق من الرابط...")
-
-    # التحقق من صحة الرابط
     if not is_valid_http(url):
-        await update.message.reply_text("❌ صيغة الرابط غير صحيحة. يجب أن يبدأ بـ http:// أو https://")
-        return
-    
-    # التحقق من استجابة الموقع
+        return f"{url} - ❌ Invalid URL"
+
     try:
-        response = requests.get(url, timeout=5)
-        if response.status_code != 200:
-            await update.message.reply_text(f"⚠️ الموقع لا يستجيب بشكل صحيح. الرمز: {response.status_code}")
-            return
+        response = requests.get(url, timeout=6)
+        status = response.status_code
+
+        donation_id = extract_donation_id(url)
+        supported = is_supported_site(url)
+
+        # ===== GiveWP Detection =====
+        if donation_id:
+            iframe = f"https://deepcreekwatershedfoundation.org/give/{donation_id}?giveDonationFormInIframe=1"
+            return (
+                f"🌐 {url}\n"
+                f"✅ GiveWP Detected\n"
+                f"🆔 ID: {donation_id}\n"
+                f"🔗 Iframe: {iframe}\n"
+                f"📶 Status: {status}"
+            )
+
+        elif supported:
+            return (
+                f"🌐 {url}\n"
+                f"⚠️ GiveWP Supported (No ID Found)\n"
+                f"📶 Status: {status}"
+            )
+
+        else:
+            return f"🌐 {url} - {'✅' if status==200 else '⚠️'} Status: {status}"
+
     except requests.RequestException:
-        await update.message.reply_text("❌ غير قادر على الوصول للموقع. يرجى التحقق من الرابط.")
+        return f"🌐 {url} - ❌ Connection Error"
+
+# ========= FILE READER =========
+
+def read_links_file(filename):
+    links = []
+    with open(filename, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            url = clean_url(line)
+            if url:
+                links.append(url)
+    return links
+
+# ========= COMMAND: /site =========
+
+async def site_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /site example.com")
         return
 
-    # التحقق مما إذا كان الموقع يدعم التبرع
-    supported = is_supported_site(url)
+    url = " ".join(context.args)
+    await update.message.reply_text("🔍 Checking...")
 
-    # استخراج معرف التبرع
-    donation_id = extract_donation_id(url)
+    result = check_url(url)
+    await update.message.reply_text(result)
 
-    # الرد بناءً على النتائج
-    if donation_id:
-        new_link = f"https://deepcreekwatershedfoundation.org/give/{donation_id}?giveDonationFormInIframe=1"
-        message = (
-            f"🌐 **مباشر**\n"
-            f"رابطك يدعم معرف التبرع: {donation_id}\n"
-            f"رابط التبرع المعدل: {new_link}"
-        )
-        await update.message.reply_text(message, parse_mode='Markdown')
-    elif supported:
-        await update.message.reply_text("✅ الرابط صالح ويدعم التبرع.")
-    else:
-        await update.message.reply_text("❌ الرابط غير مدعوم أو غير صحيح.")
+# ========= FILE HANDLER =========
 
-# أمر /check (للتحقق من روابط في ملف)
-async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    results = check_links_in_file()
-    if results:
-        reply_text = "\n".join(results)
-        await update.message.reply_text(reply_text)
-    else:
-        await update.message.reply_text("لا توجد روابط للتحقق أو الملف غير موجود.")
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    document: Document = update.message.document
 
-# أمر /checklinks (للتحقق من روابط في ملف)
-async def check_links_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    results = check_links_in_file()
-    if results:
-        reply_text = "\n".join(results)
-        await update.message.reply_text(reply_text)
-    else:
-        await update.message.reply_text("لا توجد روابط للتحقق أو الملف غير موجود.")
+    if not document.file_name.endswith(".txt"):
+        await update.message.reply_text("❌ Please upload a .txt file only")
+        return
 
-# البرنامج الرئيسي
-if __name__ == '__main__':
-    app = ApplicationBuilder().token('7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w').build()
+    await update.message.reply_text("📥 Processing file...")
 
-    # إضافة معالجات الأوامر
-    app.add_handler(CommandHandler("give", give_command))
-    app.add_handler(CommandHandler("check", check_command))
-    app.add_handler(CommandHandler("checklinks", check_links_file))
-    
+    file = await document.get_file()
+    file_path = "links.txt"
+    await file.download_to_drive(file_path)
+
+    links = read_links_file(file_path)
+
+    total = len(links)
+    working = 0
+    failed = 0
+    givewp_count = 0
+
+    chunk = ""
+
+    for url in links:
+        result = check_url(url)
+
+        if "✅" in result:
+            working += 1
+        else:
+            failed += 1
+
+        if "GiveWP" in result:
+            givewp_count += 1
+
+        if len(chunk) + len(result) > 3500:
+            await update.message.reply_text(chunk)
+            chunk = ""
+
+        chunk += result + "\n\n"
+
+    if chunk:
+        await update.message.reply_text(chunk)
+
+    stats = (
+        f"📊 RESULTS SUMMARY\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📦 Total: {total}\n"
+        f"✅ Working: {working}\n"
+        f"❌ Failed: {failed}\n"
+        f"💳 GiveWP: {givewp_count}"
+    )
+
+    await update.message.reply_text(stats)
+
+    os.remove(file_path)
+
+# ========= RUN =========
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token("7707742168:AAGYX7yJBHjm-aVECNFHJ8n68YMPRThD76w").build()
+
+    app.add_handler(CommandHandler("site", site_command))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+
+    print("Bot Started...")
     app.run_polling()
