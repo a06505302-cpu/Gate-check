@@ -7,9 +7,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 # ========= CONFIG =========
 
 API_URL = "http://gatescheck.duckdns.org:7000/check"
-CARD = "4231113045649666|09|28|092"
+CARD = "5108750403664279|02|2028|402"
 
-# ========= HELPERS =========
+# ELPERS =========
 
 def clean_url(url: str):
     url = url.strip()
@@ -83,7 +83,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please upload .txt file")
         return
 
-    await update.message.reply_text("📥 Processing...")
+    await update.message.reply_text("📥 Processing file...")
 
     file = await document.get_file()
     file_path = "links.txt"
@@ -96,13 +96,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     declined = 0
     unknown = 0
 
-    chunk = ""
-
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        tasks = [check_url_async(client, url) for url in links]
-
-        for future in asyncio.as_completed(tasks):
-            result = await future
+        for url in links:
+            result = await check_url_async(client, url)
 
             # ===== تحليل النتائج =====
             if "Charged" in result or "Approved" in result:
@@ -112,18 +108,12 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 unknown += 1
 
-            # ===== تقسيم الرسائل =====
-            if len(chunk) + len(result) > 3500:
-                await update.message.reply_text(chunk)
-                chunk = ""
-
-            chunk += result + "\n"
-
-    if chunk:
-        await update.message.reply_text(chunk)
+            # ===== إرسال النتيجة لكل رابط + delay 3 ثواني =====
+            await update.message.reply_text(result)
+            await asyncio.sleep(3)  # 🐢 delay 3 ثواني لكل رابط
 
     stats = (
-        f"\n📊 RESULTS\n"
+        f"\n📊 RESULTS SUMMARY\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📦 Total: {total}\n"
         f"✅ Approved: {approved}\n"
